@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+
+# Node (if you’re using npm for something)
+node_modules/
+package-lock.json
+
+# SQLite DB (optional)
+chemistry_partner.db
+
+# Uploads (if not needed)
+uploads/
+
+# Environment/config files
+.env
