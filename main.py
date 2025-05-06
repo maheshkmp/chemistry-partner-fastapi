@@ -24,17 +24,20 @@ from slowapi.util import get_remote_address
 # Single instance of FastAPI
 app = FastAPI()
 
-# Single CORS middleware
+# Update CORS middleware with proper configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "https://chemistry-partner-react-maheshs-projects-9308879e.vercel.app",  # Remove trailing slash
+        "http://localhost:3000"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Single instance of configurations
-SECRET_KEY = "123"
+# Update SECRET_KEY for production
+SECRET_KEY = os.getenv("SECRET_KEY", "123")  # Make sure to set this in production
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
