@@ -167,46 +167,7 @@ async def upload_pdf(
 
 limiter = Limiter(key_func=get_remote_address)
 
-@app.get("/papers/{paper_id}/pdf")
-@limiter.limit("5/minute")  # 5 requests per minute
-async def get_pdf(
-    request: Request,
-    paper_id: int,
-    token: str,
-    db: Session = Depends(get_db)
-):
-    try:
-        # Verify token
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username = payload.get("sub")
-        
-        # Get user
-        user = db.query(models.User).filter(models.User.username == username).first()
-        if not user or not user.is_active:
-            raise HTTPException(status_code=401, detail="Invalid user")
-        
-        # Get paper
-        paper = db.query(models.Paper).filter(models.Paper.id == paper_id).first()
-        if not paper:
-            raise HTTPException(status_code=404, detail="Paper not found")
-        
-        if not paper.pdf_path:
-            raise HTTPException(status_code=404, detail="PDF not found for this paper")
-        
-        pdf_path = Path(paper.pdf_path)
-        if not pdf_path.exists():
-            raise HTTPException(status_code=404, detail="PDF file not found on server")
-        
-        return FileResponse(
-            path=pdf_path,
-            media_type="application/pdf",
-            filename=f"paper_{paper_id}.pdf"
-        )
-        
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+
 
 @app.post("/register", response_model=schemas.User)
 async def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
@@ -251,17 +212,13 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 
 
 @app.post("/papers/", response_model=schemas.Paper)
-# Move validate_pdf_file before all route handlers
-async def validate_pdf_file(file: UploadFile) -> bool:
-    # Check file extension
-    if not file.filename.lower().endswith('.pdf'):
-        return False
-    
-    # Read first few bytes to verify PDF signature
-    content = await file.read(5)
-    await file.seek(0)  # Reset file pointer
-    return content.startswith(b'%PDF-')
+# Remove or comment out this standalone function
+# @app.post("/papers/", response_model=schemas.Paper)
+# async def validate_pdf_file(file: UploadFile) -> bool:
+#     ...
 
+# Add the correct route decorator to create_paper function
+@app.post("/papers/", response_model=schemas.Paper)
 async def create_paper(
     title: str = Form(...),
     description: str = Form(...),
@@ -271,6 +228,14 @@ async def create_paper(
     db: Session = Depends(get_db),
     current_user: schemas.User = Depends(get_current_active_user)
 ):
+    # Move validate_pdf_file logic inside create_paper
+    async def validate_pdf_file(file: UploadFile) -> bool:
+        if not file.filename.lower().endswith('.pdf'):
+            return False
+        content = await file.read(5)
+        await file.seek(0)
+        return content.startswith(b'%PDF-')
+
     if not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -315,6 +280,127 @@ async def create_paper(
             )
     
     return db_paper
+
+@app.post("/papers/{paper_id}/submit", response_model=schemas.PaperSubmission)
+async def submit_paper(
+    paper_id: int,
+    submission: schemas.PaperSubmissionCreate,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_active_user)
+):
+    paper = db.query(models.Paper).filter(models.Paper.id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    paper_submission = models.PaperSubmission(
+        paper_id=paper_id,
+        user_id=current_user.id,
+        time_spent=submission.time_spent,
+        marks=submission.marks,
+        submitted_at=datetime.utcnow()
+    )
+    
+    db.add(paper_submission)
+    db.commit()
+    db.refresh(paper_submission)
+    return paper_submission
+
+
+@app.get("/papers/{paper_id}/pdf")
+@limiter.limit("5/minute")  # 5 requests per minute
+async def get_pdf(
+    request: Request,
+    paper_id: int,
+    token: str,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify token
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        
+        # Get user
+        user = db.query(models.User).filter(models.User.username == username).first()
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="Invalid user")
+        
+        # Get paper
+        paper = db.query(models.Paper).filter(models.Paper.id == paper_id).first()
+        if not paper:
+            raise HTTPException(status_code=404, detail="Paper not found")
+        
+        if not paper.pdf_path:
+            raise HTTPException(status_code=404, detail="PDF not found for this paper")
+        
+        pdf_path = Path(paper.pdf_path)
+        if not pdf_path.exists():
+            raise HTTPException(status_code=404, detail="PDF file not found on server")
+        
+        return FileResponse(
+            path=pdf_path,
+            media_type="application/pdf",
+            filename=f"paper_{paper_id}.pdf"
+        )
+        
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+@app.get("/papers/", response_model=List[schemas.Paper])
+async def get_papers(
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_active_user)
+):
+    try:
+        papers = db.query(models.Paper).all()
+        return papers
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch papers"
+        )
+
+@app.get("/users/me", response_model=schemas.User)
+async def get_current_user_info(current_user: schemas.User = Depends(get_current_active_user)):
+    return current_user
+
+@app.get("/users/{username}", response_model=schemas.User)
+async def get_user_by_username(
+    username: str,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_active_user)
+):
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+@app.get("/papers/submissions/user", response_model=List[schemas.PaperSubmission])
+async def get_user_submissions(
+    current_user: schemas.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    submissions = db.query(models.PaperSubmission)\
+        .filter(models.PaperSubmission.user_id == current_user.id)\
+        .order_by(models.PaperSubmission.submitted_at)\
+        .all()
+    return submissions
+
+@app.get("/papers/{paper_id}", response_model=schemas.Paper)
+async def get_paper(
+    paper_id: int,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_active_user)
+):
+    paper = db.query(models.Paper).filter(models.Paper.id == paper_id).first()
+    if paper is None:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return paper
+
+
+
 
 @app.put("/papers/{paper_id}", response_model=schemas.Paper)
 async def update_paper(
@@ -365,55 +451,6 @@ async def update_paper(
     db.refresh(paper)
     return paper
 
-@app.get("/papers/", response_model=List[schemas.Paper])
-async def get_papers(
-    db: Session = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_active_user)
-):
-    try:
-        papers = db.query(models.Paper).all()
-        return papers
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch papers"
-        )
-
-@app.post("/papers/{paper_id}/submit", response_model=schemas.PaperSubmission)
-async def submit_paper(
-    paper_id: int,
-    submission: schemas.PaperSubmissionCreate,
-    db: Session = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_active_user)
-):
-    paper = db.query(models.Paper).filter(models.Paper.id == paper_id).first()
-    if not paper:
-        raise HTTPException(status_code=404, detail="Paper not found")
-    
-    paper_submission = models.PaperSubmission(
-        paper_id=paper_id,
-        user_id=current_user.id,
-        time_spent=submission.time_spent,
-        marks=submission.marks,
-        submitted_at=datetime.utcnow()
-    )
-    
-    db.add(paper_submission)
-    db.commit()
-    db.refresh(paper_submission)
-    return paper_submission
-
-
-@app.get("/papers/{paper_id}", response_model=schemas.Paper)
-async def get_paper(
-    paper_id: int,
-    db: Session = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_active_user)
-):
-    paper = db.query(models.Paper).filter(models.Paper.id == paper_id).first()
-    if paper is None:
-        raise HTTPException(status_code=404, detail="Paper not found")
-    return paper
 
 @app.put("/users/{user_id}/admin", response_model=schemas.User)
 async def set_admin_status(
@@ -429,31 +466,6 @@ async def set_admin_status(
     db.refresh(user)
     return user
 
-@app.get("/users/me", response_model=schemas.User)
-async def get_current_user_info(current_user: schemas.User = Depends(get_current_active_user)):
-    return current_user
-
-@app.get("/users/{username}", response_model=schemas.User)
-async def get_user_by_username(
-    username: str,
-    db: Session = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_active_user)
-):
-    user = db.query(models.User).filter(models.User.username == username).first()
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
-
-@app.get("/papers/submissions/user", response_model=List[schemas.PaperSubmission])
-async def get_user_submissions(
-    current_user: schemas.User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    submissions = db.query(models.PaperSubmission)\
-        .filter(models.PaperSubmission.user_id == current_user.id)\
-        .order_by(models.PaperSubmission.submitted_at)\
-        .all()
-    return submissions
 
 
 @app.delete("/papers/{paper_id}")
@@ -483,6 +495,31 @@ async def delete_paper(
     db.commit()
     
     return {"message": "Paper deleted successfully"}
+
+
+@app.get("/users/", response_model=List[schemas.User])
+async def get_all_users(
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_active_user)
+):
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view all users"
+        )
+    return db.query(models.User).all()
+
+@app.get("/papers/submissions/all", response_model=List[schemas.PaperSubmission])
+async def get_all_submissions(
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_active_user)
+):
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view all submissions"
+        )
+    return db.query(models.PaperSubmission).all()
 
 
 
