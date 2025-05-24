@@ -1,25 +1,37 @@
-# Remove duplicate imports
+# Standard library imports
 import os
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
-from fastapi.responses import FileResponse
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-import jwt
-from jwt.exceptions import PyJWTError
-from typing import List
-import shutil
+from io import BytesIO
 from pathlib import Path
+from typing import List
+
+# Third-party imports
+import bcrypt
+import jwt
+import pandas as pd
+from fastapi import (
+    FastAPI,
+    Depends,
+    HTTPException,
+    status,
+    UploadFile,
+    File,
+    Form,
+    Request
+)
+from fastapi.responses import FileResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, APIKeyHeader
+from fastapi.middleware.cors import CORSMiddleware
+from jwt.exceptions import PyJWTError
+from passlib.context import CryptContext
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from sqlalchemy.orm import Session
+
+# Local imports
 from database import create_tables, get_db, engine
 import models
 import schemas
-from passlib.context import CryptContext
-from fastapi.middleware.cors import CORSMiddleware
-import bcrypt
-from fastapi import Request
-from fastapi.security import APIKeyHeader
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 # Single instance of FastAPI
 app = FastAPI()
@@ -212,19 +224,13 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 
 
 @app.post("/papers/", response_model=schemas.Paper)
-# Remove or comment out this standalone function
-# @app.post("/papers/", response_model=schemas.Paper)
-# async def validate_pdf_file(file: UploadFile) -> bool:
-#     ...
-
-# Add the correct route decorator to create_paper function
-@app.post("/papers/", response_model=schemas.Paper)
 async def create_paper(
     title: str = Form(...),
     description: str = Form(...),
     duration_minutes: int = Form(...),
     total_marks: int = Form(...),
     pdf_file: UploadFile = File(None),
+    mcq_file: UploadFile = File(None),  # Add MCQ file upload
     db: Session = Depends(get_db),
     current_user: schemas.User = Depends(get_current_active_user)
 ):
@@ -278,6 +284,41 @@ async def create_paper(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to save PDF file"
             )
+
+    # Handle MCQ answer sheet upload if provided
+    if mcq_file:
+        if not mcq_file.filename.endswith(('.xlsx', '.xls')):
+            raise HTTPException(
+                status_code=400,
+                detail="Only Excel files are allowed for MCQ answers"
+            )
+
+        try:
+            # Read Excel file
+            contents = await mcq_file.read()
+            df = pd.read_excel(BytesIO(contents))
+            
+            # Validate Excel structure
+            required_columns = ['question_number', 'correct_option']
+            if not all(col in df.columns for col in required_columns):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Excel must contain 'question_number' and 'correct_option' columns"
+                )
+
+            # Add MCQ answers
+            for _, row in df.iterrows():
+                answer = models.MCQAnswer(
+                    paper_id=db_paper.id,
+                    question_number=int(row['question_number']),
+                    correct_option=int(row['correct_option'])
+                )
+                db.add(answer)
+
+            db.commit()
+
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error processing MCQ file: {str(e)}")
     
     return db_paper
 
@@ -387,20 +428,6 @@ async def get_user_submissions(
         .order_by(models.PaperSubmission.submitted_at)\
         .all()
     return submissions
-
-@app.get("/papers/{paper_id}", response_model=schemas.Paper)
-async def get_paper(
-    paper_id: int,
-    db: Session = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_active_user)
-):
-    paper = db.query(models.Paper).filter(models.Paper.id == paper_id).first()
-    if paper is None:
-        raise HTTPException(status_code=404, detail="Paper not found")
-    return paper
-
-
-
 
 @app.put("/papers/{paper_id}", response_model=schemas.Paper)
 async def update_paper(
@@ -520,6 +547,161 @@ async def get_all_submissions(
             detail="Not authorized to view all submissions"
         )
     return db.query(models.PaperSubmission).all()
+
+
+@app.post("/papers/{paper_id}/answers/upload")
+async def upload_mcq_answers(
+    paper_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_active_user)
+):
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to upload answers"
+        )
+
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(
+            status_code=400,
+            detail="Only Excel files are allowed"
+        )
+
+    try:
+        # Read Excel file
+        contents = await file.read()
+        df = pd.read_excel(BytesIO(contents))
+        
+        # Validate Excel structure
+        required_columns = ['question_number', 'correct_option']
+        if not all(col in df.columns for col in required_columns):
+            raise HTTPException(
+                status_code=400,
+                detail="Excel must contain 'question_number' and 'correct_option' columns"
+            )
+
+        # Clear existing answers
+        db.query(models.MCQAnswer).filter(models.MCQAnswer.paper_id == paper_id).delete()
+
+        # Add new answers
+        for _, row in df.iterrows():
+            answer = models.MCQAnswer(
+                paper_id=paper_id,
+                question_number=int(row['question_number']),
+                correct_option=int(row['correct_option'])
+            )
+            db.add(answer)
+
+        db.commit()
+        return {"message": "MCQ answers uploaded successfully"}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/papers/{paper_id}/answers/check")
+async def check_user_answers(
+    paper_id: int,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_active_user)
+):
+    # Get the user's submission
+    submission = db.query(models.PaperSubmission)\
+        .filter(models.PaperSubmission.paper_id == paper_id)\
+        .filter(models.PaperSubmission.user_id == current_user.id)\
+        .first()
+    
+    if not submission:
+        raise HTTPException(status_code=404, detail="No submission found for this paper")
+
+    # Get correct answers
+    correct_answers = db.query(models.MCQAnswer)\
+        .filter(models.MCQAnswer.paper_id == paper_id)\
+        .all()
+    
+    if not correct_answers:
+        raise HTTPException(status_code=404, detail="No answers found for this paper")
+
+    # Create a dictionary of correct answers
+    correct_dict = {ans.question_number: ans.correct_option for ans in correct_answers}
+    
+    # Compare answers and create detailed response
+    results = []
+    total_correct = 0
+    
+    for answer in submission.answers:
+        is_correct = (answer['question_number'] in correct_dict and 
+                     correct_dict[answer['question_number']] == answer['selected_option'])
+        
+        results.append({
+            "question_number": answer['question_number'],
+            "selected_option": answer['selected_option'],
+            "correct_option": correct_dict.get(answer['question_number']),
+            "is_correct": is_correct
+        })
+        
+        if is_correct:
+            total_correct += 1
+
+    return {
+        "total_questions": len(correct_answers),
+        "total_correct": total_correct,
+        "score_percentage": (total_correct / len(correct_answers)) * 100,
+        "detailed_results": results
+    }
+
+
+@app.post("/papers/{paper_id}/check-answers", response_model=schemas.PaperResult)
+async def check_answers(
+    paper_id: int,
+    answers: dict,
+    db: Session = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_active_user)
+):
+    paper = db.query(models.Paper).filter(models.Paper.id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    # Get correct answers from the database
+    correct_answers = db.query(models.PaperAnswers).filter(
+        models.PaperAnswers.paper_id == paper_id
+    ).first()
+
+    if not correct_answers:
+        raise HTTPException(status_code=404, detail="Answer sheet not found")
+
+    # Compare answers and calculate score
+    score = 0
+    answer_breakdown = []
+    
+    for question_num, user_answer in answers.items():
+        correct = user_answer.lower() == correct_answers.answers.get(question_num, '').lower()
+        if correct:
+            score += 1
+        answer_breakdown.append({
+            "questionNumber": question_num,
+            "userAnswer": user_answer,
+            "correctAnswer": correct_answers.answers.get(question_num, ''),
+            "correct": correct
+        })
+
+    # Save the result
+    result = models.PaperSubmission(
+        user_id=current_user.id,
+        paper_id=paper_id,
+        score=score,
+        total_questions=len(answers),
+        submitted_at=datetime.now()
+    )
+    db.add(result)
+    db.commit()
+
+    return {
+        "score": score,
+        "totalMarks": len(answers),
+        "answers": answer_breakdown
+    }
 
 
 

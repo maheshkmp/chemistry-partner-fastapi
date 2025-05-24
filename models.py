@@ -1,8 +1,8 @@
-from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, Text
+from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, Text, DateTime
 from sqlalchemy.orm import relationship
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
 from sqlalchemy.sql import func
 from database import Base
+from datetime import datetime
 
 class User(Base):
     __tablename__ = "users"
@@ -15,6 +15,8 @@ class User(Base):
     is_admin = Column(Boolean, default=False)
 
     submissions = relationship("Submission", back_populates="user")
+    uploaded_files = relationship("File", back_populates="user")
+    paper_submissions = relationship("PaperSubmission", back_populates="user")
 
 class Paper(Base):
     __tablename__ = "papers"
@@ -26,8 +28,27 @@ class Paper(Base):
     total_marks = Column(Integer)
     pdf_path = Column(String, nullable=True)  # Path to stored PDF file
     
+    # All relationships in one place
     submissions = relationship("Submission", back_populates="paper")
     questions = relationship("Question", back_populates="paper")
+    files = relationship("File", back_populates="paper", cascade="all, delete-orphan")
+    mcq_answers = relationship("MCQAnswer", back_populates="paper", cascade="all, delete-orphan")
+    paper_submissions = relationship("PaperSubmission", back_populates="paper")
+
+class PaperSubmission(Base):
+    __tablename__ = "paper_submissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    paper_id = Column(Integer, ForeignKey("papers.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    time_spent = Column(Integer)  # Time spent in seconds
+    marks = Column(Integer)
+    submitted_at = Column(DateTime(timezone=True), server_default=func.now())
+    answers = Column(Text)  # Store answers as JSON string
+
+    # Relationships using back_populates consistently
+    user = relationship("User", back_populates="paper_submissions")
+    paper = relationship("Paper", back_populates="paper_submissions")
 
 class Question(Base):
     __tablename__ = "questions"
@@ -52,12 +73,26 @@ class Submission(Base):
     user = relationship("User", back_populates="submissions")
     paper = relationship("Paper", back_populates="submissions")
 
-class PaperSubmission(Base):
-    __tablename__ = "paper_submissions"
+class MCQAnswer(Base):
+    __tablename__ = "mcq_answers"
 
     id = Column(Integer, primary_key=True, index=True)
     paper_id = Column(Integer, ForeignKey("papers.id"))
-    user_id = Column(Integer, ForeignKey("users.id"))
-    time_spent = Column(Integer)  # Time spent in seconds
-    marks = Column(Integer)
-    submitted_at = Column(DateTime(timezone=True), server_default=func.now())
+    question_number = Column(Integer)
+    correct_option = Column(Integer)
+
+    paper = relationship("Paper", back_populates="mcq_answers")
+
+class File(Base):
+    __tablename__ = "files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    file_type = Column(String, nullable=False)  # 'pdf', 'excel', etc.
+    upload_date = Column(DateTime, default=datetime.utcnow)
+    paper_id = Column(Integer, ForeignKey("papers.id", ondelete="CASCADE"))
+    uploaded_by = Column(Integer, ForeignKey("users.id"))
+
+    paper = relationship("Paper", back_populates="files")
+    user = relationship("User", back_populates="uploaded_files")

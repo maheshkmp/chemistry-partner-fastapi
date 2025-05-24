@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import List, Dict, Optional
 from datetime import datetime
 
 class UserBase(BaseModel):
@@ -97,6 +97,36 @@ class PaperSubmission(PaperSubmissionBase):
     paper_id: int
     user_id: int
     submitted_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class AnswerDetail(BaseModel):
+    questionNumber: int
+    userAnswer: str
+    correctAnswer: str
+    correct: bool
+
+class PaperResult(BaseModel):
+    score: int
+    totalMarks: int
+    answers: List[AnswerDetail]
+
+
+class FileBase(BaseModel):
+    filename: str
+    file_type: str
+    file_path: str
+
+class FileCreate(FileBase):
+    paper_id: int
+
+class File(FileBase):
+    id: int
+    upload_date: datetime
+    paper_id: int
+    uploaded_by: int
 
     class Config:
         orm_mode = True
