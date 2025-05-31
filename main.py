@@ -40,7 +40,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://chemistry-partner-react-maheshs-projects-9308879e.vercel.app",  # Remove trailing slash
+        "https://www.ghostcod.com/",  # Remove trailing slash
         "http://localhost:3000"
     ],
     allow_credentials=True,
