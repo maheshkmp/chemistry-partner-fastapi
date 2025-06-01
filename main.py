@@ -1,5 +1,6 @@
 # Standard library imports
 import os
+import json
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -41,7 +42,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://www.ghostcod.com/",  # Remove trailing slash
-        #"http://localhost:3000"
+        "http://localhost:3000"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -333,18 +334,47 @@ async def submit_paper(
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     
+    # Get correct answers
+    correct_answers = db.query(models.MCQAnswer)\
+        .filter(models.MCQAnswer.paper_id == paper_id)\
+        .all()
+    
+    if not correct_answers:
+        raise HTTPException(status_code=404, detail="No answers found for this paper")
+
+    # Convert answers to JSON string before storing
+    answers_json = json.dumps(submission.answers)
+    
+    # Calculate marks
+    correct_dict = {ans.question_number: ans.correct_option for ans in correct_answers}
+    total_marks = 0
+    
+    for question_number, selected_option in submission.answers.items():
+        if int(question_number) in correct_dict and correct_dict[int(question_number)] == selected_option:
+            total_marks += 1
+    
     paper_submission = models.PaperSubmission(
         paper_id=paper_id,
         user_id=current_user.id,
         time_spent=submission.time_spent,
-        marks=submission.marks,
+        marks=total_marks,
+        answers=answers_json,
         submitted_at=datetime.utcnow()
     )
     
     db.add(paper_submission)
     db.commit()
     db.refresh(paper_submission)
-    return paper_submission
+    
+    return {
+        "id": paper_submission.id,
+        "paper_id": paper_submission.paper_id,
+        "user_id": paper_submission.user_id,
+        "time_spent": paper_submission.time_spent,
+        "marks": paper_submission.marks,
+        "submitted_at": paper_submission.submitted_at,
+        "answers": json.loads(paper_submission.answers)
+    }
 
 
 @app.get("/papers/{paper_id}/pdf")
@@ -549,25 +579,13 @@ async def get_all_submissions(
     return db.query(models.PaperSubmission).all()
 
 
-@app.post("/papers/{paper_id}/answers/upload")
+@app.post("/papers/{paper_id}/upload-answers")
 async def upload_mcq_answers(
     paper_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: schemas.User = Depends(get_current_active_user)
 ):
-    if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to upload answers"
-        )
-
-    if not file.filename.endswith(('.xlsx', '.xls')):
-        raise HTTPException(
-            status_code=400,
-            detail="Only Excel files are allowed"
-        )
-
     try:
         # Read Excel file
         contents = await file.read()
@@ -581,19 +599,26 @@ async def upload_mcq_answers(
                 detail="Excel must contain 'question_number' and 'correct_option' columns"
             )
 
-        # Clear existing answers
-        db.query(models.MCQAnswer).filter(models.MCQAnswer.paper_id == paper_id).delete()
-
-        # Add new answers
+        # Convert DataFrame to dictionary format
+        answers_dict = {}
         for _, row in df.iterrows():
-            answer = models.MCQAnswer(
-                paper_id=paper_id,
-                question_number=int(row['question_number']),
-                correct_option=int(row['correct_option'])
-            )
-            db.add(answer)
+            question_number = str(int(row['question_number']))  # Convert to string for JSON compatibility
+            answers_dict[question_number] = int(row['correct_option'])
 
+        # Convert to JSON string
+        answers_json = json.dumps(answers_dict)
+
+        # Create or update paper submission
+        submission = models.PaperSubmission(
+            paper_id=paper_id,
+            user_id=current_user.id,
+            answers=answers_json,
+            time_spent=0,  # You can update this later
+            marks=0  # You can calculate this later
+        )
+        db.add(submission)
         db.commit()
+        
         return {"message": "MCQ answers uploaded successfully"}
 
     except Exception as e:
@@ -623,6 +648,9 @@ async def check_user_answers(
     if not correct_answers:
         raise HTTPException(status_code=404, detail="No answers found for this paper")
 
+    # Parse the JSON string back to dictionary
+    user_answers = json.loads(submission.answers)
+    
     # Create a dictionary of correct answers
     correct_dict = {ans.question_number: ans.correct_option for ans in correct_answers}
     
@@ -630,20 +658,19 @@ async def check_user_answers(
     results = []
     total_correct = 0
     
-    for answer in submission.answers:
-        is_correct = (answer['question_number'] in correct_dict and 
-                     correct_dict[answer['question_number']] == answer['selected_option'])
-        
-        results.append({
-            "question_number": answer['question_number'],
-            "selected_option": answer['selected_option'],
-            "correct_option": correct_dict.get(answer['question_number']),
-            "is_correct": is_correct
-        })
-        
+    for question_number, selected_option in user_answers.items():
+        question_num = int(question_number)
+        is_correct = question_num in correct_dict and correct_dict[question_num] == selected_option
         if is_correct:
             total_correct += 1
-
+            
+        results.append({
+            "question_number": question_num,
+            "selected_option": selected_option,
+            "correct_option": correct_dict.get(question_num),
+            "is_correct": is_correct
+        })
+    
     return {
         "total_questions": len(correct_answers),
         "total_correct": total_correct,
