@@ -28,7 +28,7 @@ class QuestionBase(BaseModel):
     question_text: str
     answer: str
     marks: int
-z
+
 class QuestionCreate(QuestionBase):
     pass
 
