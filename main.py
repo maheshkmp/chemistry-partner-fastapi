@@ -731,4 +731,37 @@ async def check_answers(
     }
 
 
+@app.post("/papers/{paper_id}/submit")
+async def submit_answers(
+    paper_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    # Read Excel file
+    df = pd.read_excel(file.file, engine='openpyxl')
+    answers = df.set_index('Question')['Answer'].to_dict()
+
+    # Store submission
+    submission = PaperSubmission(
+        paper_id=paper_id,
+        answers=json.dumps(answers),
+        score=0  # Temporary placeholder
+    )
+    db.add(submission)
+    db.commit()
+
+    # Calculate score
+    correct_answers = db.query(MCQAnswer).filter(MCQAnswer.paper_id == paper_id).all()
+    score = sum(
+        1 for ans in correct_answers
+        if str(answers.get(ans.question_number, '')) == ans.correct_option
+    )
+
+    # Update score
+    submission.score = score
+    db.commit()
+
+    return {"score": score, "total": len(correct_answers)}
+
+
 

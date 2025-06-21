@@ -36,7 +36,7 @@ class Paper(Base):
     paper_submissions = relationship("PaperSubmission", back_populates="paper")
 
 class PaperSubmission(Base):
-    __tablename__ = "paper_submissions"
+    __tablename__ = 'paper_submissions'
 
     id = Column(Integer, primary_key=True, index=True)
     paper_id = Column(Integer, ForeignKey("papers.id"))
@@ -45,6 +45,7 @@ class PaperSubmission(Base):
     marks = Column(Integer)
     submitted_at = Column(DateTime(timezone=True), server_default=func.now())
     answers = Column(Text)  # Store answers as JSON string
+    score = Column(Integer)  # Added score field
 
     # Relationships using back_populates consistently
     user = relationship("User", back_populates="paper_submissions")
@@ -74,12 +75,12 @@ class Submission(Base):
     paper = relationship("Paper", back_populates="submissions")
 
 class MCQAnswer(Base):
-    __tablename__ = "mcq_answers"
+    __tablename__ = 'mcq_answers'
 
-    id = Column(Integer, primary_key=True, index=True)
-    paper_id = Column(Integer, ForeignKey("papers.id"))
+    id = Column(Integer, primary_key=True)
+    paper_id = Column(Integer, ForeignKey('papers.id'))
     question_number = Column(Integer)
-    correct_option = Column(Integer)
+    correct_option = Column(String(1))
 
     paper = relationship("Paper", back_populates="mcq_answers")
 
