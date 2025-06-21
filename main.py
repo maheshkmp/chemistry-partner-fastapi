@@ -30,6 +30,7 @@ from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 # Local imports
+from models import User  # Add this line
 from database import create_tables, get_db, engine
 import models
 import schemas
@@ -762,6 +763,26 @@ async def submit_answers(
     db.commit()
 
     return {"score": score, "total": len(correct_answers)}
+
+
+@app.post("/papers/{paper_id}/purchase")
+async def purchase_paper(
+    paper_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Add payment processing logic here
+    # Verify paper exists
+    paper = db.query(Paper).filter(Paper.id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    # Return mock success response
+    return {
+        "message": "Purchase successful",
+        "paper_id": paper_id,
+        "access_url": f"/papers/{paper_id}/content"
+    }
 
 
 
